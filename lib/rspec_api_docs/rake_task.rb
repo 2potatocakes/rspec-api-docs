@@ -14,7 +14,6 @@ module RspecApiDocs
       :pattern,
       :rspec_opts,
       :existing_file,
-      :dir,
       :verify
 
     def initialize(name = nil, &block)
@@ -35,34 +34,44 @@ module RspecApiDocs
     def define
       desc default_desc
       task name do
-        @dir = Dir.mktmpdir if verify
-
-        rspec_task.run_task(verbose)
-
-        verify! if verify
+        verify ? verify_api_docs : generate_api_docs(rspec_task_options)
       end
     end
 
-    def generated
-      JSON.parse(File.read(Pathname.new(dir) + 'index.json'))
+    def verify_api_docs
+      Dir.mktmpdir do |tmp_dir|
+        task_options = rspec_task_options
+        task_options << ["--require #{tmp_output_dir_config(tmp_dir).path}"]
+
+        generate_api_docs(task_options)
+
+        generated_api_docs = read_json(File.join(tmp_dir, 'index.json'))
+        existing_api_docs = read_json(existing_file)
+        verify!(generated_api_docs, existing_api_docs)
+      end
     end
 
-    def existing
-      JSON.parse(File.read(existing_file))
+    def generate_api_docs(options = [])
+      rspec_task(options).run_task(verbose)
     end
 
-    def rspec_task
+    def read_json(path)
+      JSON.parse(File.read(path))
+    end
+
+    def rspec_task(rspec_opts)
       RSpec::Core::RakeTask.new.tap do |task|
         task.pattern = pattern
-        task.rspec_opts = task_rspec_opts
+        task.rspec_opts = rspec_opts
       end
     end
 
-    def spec_helper
-      tempfile = Tempfile.new(['shoebox', '.rb'])
+    def tmp_output_dir_config(tmp_dir)
+      tempfile = Tempfile.new(['tmp_config', '.rb' ])
       tempfile.write <<-EOF
+        require "rspec_api_docs"
         RspecApiDocs.configure do |config|
-          config.output_dir = '#{dir}'
+          config.output_dir = '#{tmp_dir}'
         end
       EOF
       tempfile.close
@@ -75,25 +84,16 @@ module RspecApiDocs
       end
     end
 
-    def remove_dir
-      FileUtils.remove_entry dir
-    end
-
-    def verify!
+    def verify!(generated_api_docs, existing_api_docs)
       configure_rspec
-
-      RSpecMatchers.expect(generated).to RSpecMatchers.eq(existing)
-
-      remove_dir
+      RSpecMatchers.expect(generated_api_docs).to RSpecMatchers.eq(existing_api_docs)
     end
 
-    def task_rspec_opts
-      arr = rspec_opts + [
+    def rspec_task_options
+      rspec_opts + [
         '--format RspecApiDocs::Formatter',
         '--order defined',
       ]
-      arr += ["--require #{spec_helper.path}"] if verify
-      arr
     end
 
     def name
